@@ -1,3 +1,7 @@
+# Any audio files used for testing.
+*.rx2
+*.wav
+
 # Prerequisites
 *.d
 
