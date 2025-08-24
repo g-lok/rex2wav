@@ -1,6 +1,12 @@
+# MacOS bs
+.DS_Store
+
 # Any audio files used for testing.
 *.rx2
 *.wav
+
+# Ignore sdk directory
+sdk/
 
 # Prerequisites
 *.d
