@@ -27,7 +27,7 @@ CFLAGS = -Wall -Wextra -std=c11 -g
 #             -O2
 LDFLAGS  = -F$(FRAMEWORK_DIR) \
             -framework "REX Shared Library"
-SRCS = REXTest.c REX.c WAV.c 
+SRCS = REXTest.c REX.c Wav.c 
 # SRCDIR   := src
 OBJS = $(SRCS:.c=.o)
 # OBJDIR   := obj
