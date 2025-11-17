@@ -6,7 +6,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <memory.h>
+#include <string.h>
 #include <assert.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <errno.h>
 
 #include "REX.h"
 #include "Wav.h"
@@ -42,11 +46,13 @@ void GetErrorText(REXError error, char *text, REX_int32_t size);
 void PrintREXError(REXError error);
 REX_int32_t ScaleSampleLength(REX_int32_t inSampleRate, REX_int32_t sampleLength);
 
-REXError ExtractAllSlices(REXHandle handle, int outputSampleRate, char* outputDir);
+REXError ExtractAllSlices(REXHandle handle, int outputSampleRate, char* outputDir, const char* inputFilePath);
+REXError ExtractAsWholeFileWithCues(REXHandle handle, int outputSampleRate, const char* outputPath);
+void WriteCueFile(REXHandle handle, const char* cueFilePath);
 REXError PreviewRenderInTempo(REXHandle handle, REX_int32_t tempo, REX_int32_t frameRate, char* outputDir);
 
 REXCallbackResult MyCallback(REX_int32_t percentFinished, void* userData);
-int Test(char* outputDir, char* filepath, int outputSampleRate);
+int Test(char* outputPath, char* filepath, int outputSampleRate, int extractSlicesSeparately, int writeCueFiles);
 
 #if REX_DLL_LOADER
 
@@ -130,21 +136,15 @@ static int GetBaseDirPath(char* iBufUTF8, size_t iBufSize) {
 //	REX_DLL_BUILD on and off, right?
 //	Move actual tests to shared file and have different main (c/cpp) for DLL and C++?
 
-int Test(char* outputDir, char* filepath, int outputSampleRate)
+int Test(char* outputPath, char* filepath, int outputSampleRate, int extractSlicesSeparately, int writeCueFiles)
 {
 	REXError result;
 	REXHandle handle = 0;
 	REXInfo info;
-	REXCreatorInfo creatorInfo;
 	size_t fileSize = 0;
 	char* fileBuffer = 0;
 
 	int returnCode = -1;
-
-	printf("REX_DLL_BUILD = %d\n", REX_DLL_BUILD);
-	printf("REX_DLL_LOADER = %d\n", REX_DLL_LOADER);
-	printf("REX_WINDOWS = %d\n", REX_WINDOWS);
-	printf("REX_MAC = %d\n", REX_MAC);
 
 #if REX_DLL_LOADER
 
@@ -163,12 +163,6 @@ int Test(char* outputDir, char* filepath, int outputSampleRate)
 		printf("Error: Failed to get the path to the base directory!\n");
 		return -1;
 	}
-
-#if REX_WINDOWS
-	wprintf(L"Loading REX module from directory \"%s\"\n", &pathBuf[0]);
-#else
-	printf("Loading REX module from directory \"%s\"\n", &pathBuf[0]);
-#endif
 
 	result = REXInitializeDLL_DirPath(&pathBuf[0]);
 	if (result != kREXError_NoError) {
@@ -247,54 +241,47 @@ int Test(char* outputDir, char* filepath, int outputSampleRate)
 		if (result == kREXError_NoError) {
 
 			/* 
-				Print information about the file, then extract slices and render as a single bar.
+				Get file info for processing
 			*/
 			result = REXGetInfo(handle, (REX_int32_t)sizeof(REXInfo), &info);
 			if (result == kREXError_NoError) {
-				printf("\nInformation about \"%s\":\n", filepath);
-				printf("\tChannels:         %d\n", info.fChannels);
-				printf("\tSample rate:      %d\n", info.fSampleRate);
-				printf("\tPPQ length:       %d\n", info.fPPQLength);
-				printf("\tSlice count:      %d\n", info.fSliceCount);
-				printf("\tTempo:            %.01f\n", (float) info.fTempo / 1000.0f);
-				printf("\tOriginal Tempo:   %.01f\n", (float) info.fOriginalTempo / 1000.0f);
-				printf("\tSign:             %d/%d\n", info.fTimeSignNom, info.fTimeSignDenom);
-				printf("\t\n");
-
-				/*
-					Print optional creator-supplied information.
-				*/
-				result = REXGetCreatorInfo(handle, (REX_int32_t)sizeof(REXCreatorInfo), &creatorInfo);
-				if (result == kREXError_NoError) {
-					printf("\tCreator name:     %s\n", creatorInfo.fName);
-					printf("\tCopyright:        %s\n", creatorInfo.fCopyright);
-					printf("\tURL:              %s\n", creatorInfo.fURL);
-					printf("\tE-mail:           %s\n", creatorInfo.fEmail);
-					printf("\tComments:         %s\n", creatorInfo.fFreeText);
-					printf("\t\n\n");
-				} else if (result == kREXError_NoCreatorInfoAvailable) {
-					printf("\t(No creator-supplied information available.)\n\n");
-				} else {
-					PrintREXError(result);
-				}
 
 				/* 
-					Save each slice as a separate .WAV-file. 
+					Extract REX file - either as whole file with cues or as separate slices
 				*/
-				result = ExtractAllSlices(handle, outputSampleRate, outputDir);
-				if (result == kREXError_NoError) {
-					returnCode = 0;
+				if (extractSlicesSeparately) {
+					result = ExtractAllSlices(handle, outputSampleRate, outputPath, filepath);
+					if (result == kREXError_NoError) {
+						printf(" ✓ %d slices\n", info.fSliceCount);
+						returnCode = 0;
+					} else {
+						PrintREXError(result);
+					}
 				} else {
-					PrintREXError(result);
+					result = ExtractAsWholeFileWithCues(handle, outputSampleRate, outputPath);
+					if (result == kREXError_NoError) {
+						/* Optionally export .cue file with slice data */
+						if (writeCueFiles) {
+							char cueFilePath[1024];
+							const char* dot = strrchr(outputPath, '.');
+							if (dot) {
+								size_t baseLen = dot - outputPath;
+								if (baseLen >= sizeof(cueFilePath) - 5) {
+									baseLen = sizeof(cueFilePath) - 5;
+								}
+								memcpy(cueFilePath, outputPath, baseLen);
+								strcpy(cueFilePath + baseLen, ".cue");
+							} else {
+								snprintf(cueFilePath, sizeof(cueFilePath), "%s.cue", outputPath);
+							}
+							WriteCueFile(handle, cueFilePath);
+						}
+						printf(" ✓ %d slices\n", info.fSliceCount);
+						returnCode = 0;
+					} else {
+						PrintREXError(result);
+					}
 				}
-
-
-				/*
-					Preview render in lower, same and higher tempo.
-				*/
-				PreviewRenderInTempo(handle,info.fOriginalTempo,outputSampleRate, outputDir);
-				PreviewRenderInTempo(handle,info.fOriginalTempo/4,outputSampleRate, outputDir);
-				PreviewRenderInTempo(handle,info.fOriginalTempo+info.fOriginalTempo/4,outputSampleRate, outputDir);
 
 			} else {
 				PrintREXError(result);
@@ -328,11 +315,9 @@ int Test(char* outputDir, char* filepath, int outputSampleRate)
 
 REXCallbackResult MyCallback(REX_int32_t percentFinished, void* userData)
 {
-	static REX_int32_t lastCall = 10;
-	if ((percentFinished / 10) != lastCall) {
-		printf("\tReading \"%s\" : %d%% finished...\n", (char*)userData, percentFinished);
-		lastCall = percentFinished / 10;
-	}
+	/* Silent callback - no progress messages */
+	(void)percentFinished;
+	(void)userData;
 	return kREXCallback_Continue;
 }
 
@@ -463,10 +448,28 @@ void PrintREXError(REXError error)
 	Extracts all slices, one by one and write each of them to a file
 */
 
-REXError ExtractAllSlices(REXHandle handle, int outputSampleRate, char* outputDir)
+REXError ExtractAllSlices(REXHandle handle, int outputSampleRate, char* outputDir, const char* inputFilePath)
 {
 	REXError result;
 	REXInfo info;
+	char baseFileName[256];
+	
+	/* Extract base filename from input path */
+	const char* lastSlash = strrchr(inputFilePath, '/');
+	const char* baseName = lastSlash ? lastSlash + 1 : inputFilePath;
+	
+	/* Remove extension */
+	const char* dot = strrchr(baseName, '.');
+	if (dot) {
+		size_t baseLen = dot - baseName;
+		if (baseLen >= sizeof(baseFileName)) {
+			baseLen = sizeof(baseFileName) - 1;
+		}
+		memcpy(baseFileName, baseName, baseLen);
+		baseFileName[baseLen] = '\0';
+	} else {
+		snprintf(baseFileName, sizeof(baseFileName), "%s", baseName);
+	}
 	REXSliceInfo sliceInfo;
 	float* renderBuffers[2];
 	REX_int32_t sliceIndex = 0;
@@ -539,8 +542,8 @@ REXError ExtractAllSlices(REXHandle handle, int outputSampleRate, char* outputDi
 			char fileName[255];
 			char fileNameTxt[255];
 			
-			sprintf(fileName, "%s/Slice_%03d.wav", outputDir, sliceIndex + 1);
-			sprintf(fileNameTxt, "%s/Slice_%03d.txt", outputDir, sliceIndex + 1);
+			sprintf(fileName, "%s/%s_slice%03d.wav", outputDir, baseFileName, sliceIndex + 1);
+			sprintf(fileNameTxt, "%s/%s_slice%03d.txt", outputDir, baseFileName, sliceIndex + 1);
 			outputFile = fopen(fileName, "wb");
 			outputFileTxt = fopen(fileNameTxt, "w");
 			if (outputFile != 0 && outputFileTxt != 0) {
@@ -563,6 +566,221 @@ REXError ExtractAllSlices(REXHandle handle, int outputSampleRate, char* outputDi
 
 
 	return kREXError_NoError;
+}
+
+
+/*
+	ExtractAsWholeFileWithCues()
+	Renders the entire REX file as one continuous WAV file with cue markers at each slice position.
+*/
+REXError ExtractAsWholeFileWithCues(REXHandle handle, int outputSampleRate, const char* outputPath) {
+	REXError result;
+	REXInfo info;
+	REXSliceInfo sliceInfo;
+	float* renderBuffers[2];
+	REX_int32_t sliceIndex = 0;
+	uint32_t totalSamples = 0;
+	uint32_t currentPosition = 0;
+	WaveCuePoint* cuePoints = NULL;
+	float* fullAudioLeft = NULL;
+	float* fullAudioRight = NULL;
+	FILE* outputFile = NULL;
+	
+	/* Get info on entire REX object */
+	result = REXGetInfo(handle, (REX_int32_t)sizeof(REXInfo), &info);
+	if (result != kREXError_NoError) {
+		return result;
+	}
+	
+	/* Calculate total sample count needed */
+	for (sliceIndex = 0; sliceIndex < info.fSliceCount; sliceIndex++) {
+		result = REXGetSliceInfo(handle, sliceIndex, (REX_int32_t)sizeof(REXSliceInfo), &sliceInfo);
+		if (result != kREXError_NoError) {
+			return result;
+		}
+		totalSamples += sliceInfo.fSampleLength;
+	}
+	
+	/* Allocate memory for the full audio */
+	fullAudioLeft = malloc(totalSamples * sizeof(float));
+	if (fullAudioLeft == NULL) {
+		printf("Malloc failed for audio buffer\n");
+		return kREXError_OutOfMemory;
+	}
+	
+	if (info.fChannels == 2) {
+		fullAudioRight = malloc(totalSamples * sizeof(float));
+		if (fullAudioRight == NULL) {
+			printf("Malloc failed for right channel buffer\n");
+			free(fullAudioLeft);
+			return kREXError_OutOfMemory;
+		}
+	}
+	
+	/* Allocate memory for cue points */
+	cuePoints = malloc(info.fSliceCount * sizeof(WaveCuePoint));
+	if (cuePoints == NULL) {
+		printf("Malloc failed for cue points\n");
+		free(fullAudioLeft);
+		if (fullAudioRight) free(fullAudioRight);
+		return kREXError_OutOfMemory;
+	}
+	
+	/* Render all slices into the full audio buffer and record cue points */
+	currentPosition = 0;
+	for (sliceIndex = 0; sliceIndex < info.fSliceCount; sliceIndex++) {
+		float* sliceSamples = NULL;
+		
+		/* Get slice info */
+		result = REXGetSliceInfo(handle, sliceIndex, (REX_int32_t)sizeof(REXSliceInfo), &sliceInfo);
+		if (result != kREXError_NoError) {
+			free(fullAudioLeft);
+			if (fullAudioRight) free(fullAudioRight);
+			free(cuePoints);
+			return result;
+		}
+		
+		/* Record cue point at the start of this slice */
+		cuePoints[sliceIndex].position = currentPosition;
+		snprintf(cuePoints[sliceIndex].label, sizeof(cuePoints[sliceIndex].label), 
+		         "Slice %03d", sliceIndex + 1);
+		
+		/* Allocate temporary buffer for this slice */
+		sliceSamples = malloc(info.fChannels * sliceInfo.fSampleLength * sizeof(float));
+		if (sliceSamples == NULL) {
+			printf("Malloc failed for slice buffer\n");
+			free(fullAudioLeft);
+			if (fullAudioRight) free(fullAudioRight);
+			free(cuePoints);
+			return kREXError_OutOfMemory;
+		}
+		
+		/* Set up render buffers for this slice */
+		renderBuffers[0] = &sliceSamples[0];
+		if (info.fChannels == 2) {
+			renderBuffers[1] = &sliceSamples[sliceInfo.fSampleLength];
+		} else {
+			renderBuffers[1] = NULL;
+		}
+		
+		/* Render this slice */
+		result = REXRenderSlice(handle, sliceIndex, sliceInfo.fSampleLength, renderBuffers);
+		if (result != kREXError_NoError) {
+			free(sliceSamples);
+			free(fullAudioLeft);
+			if (fullAudioRight) free(fullAudioRight);
+			free(cuePoints);
+			return result;
+		}
+		
+		/* Copy this slice into the full audio buffer */
+		memcpy(&fullAudioLeft[currentPosition], renderBuffers[0], 
+		       sliceInfo.fSampleLength * sizeof(float));
+		if (info.fChannels == 2) {
+			memcpy(&fullAudioRight[currentPosition], renderBuffers[1], 
+			       sliceInfo.fSampleLength * sizeof(float));
+		}
+		
+		currentPosition += sliceInfo.fSampleLength;
+		free(sliceSamples);
+	}
+	
+	/* Write the complete WAV file with cue markers */
+	outputFile = fopen(outputPath, "wb");
+	if (outputFile != NULL) {
+		float* finalBuffers[2];
+		finalBuffers[0] = fullAudioLeft;
+		finalBuffers[1] = fullAudioRight;
+		
+		WriteWaveWithCues(outputFile, totalSamples, info.fChannels, 16, outputSampleRate, 
+		                  finalBuffers, cuePoints, info.fSliceCount);
+		fclose(outputFile);
+	} else {
+		printf("  ✗ Unable to open file \"%s\" for writing\n", outputPath);
+		result = kREXError_OutOfMemory; /* Using this as a generic error */
+	}
+	
+	/* Clean up */
+	free(fullAudioLeft);
+	if (fullAudioRight) free(fullAudioRight);
+	free(cuePoints);
+	
+	return kREXError_NoError;
+}
+
+
+/*
+	WriteCueFile()
+	Writes slice information to a CDRWIN .cue sheet file
+*/
+void WriteCueFile(REXHandle handle, const char* cueFilePath) {
+	REXError result;
+	REXInfo info;
+	REXSliceInfo sliceInfo;
+	FILE* cueFile = NULL;
+	uint32_t currentPosition = 0;
+	
+	/* Get info on entire REX object */
+	result = REXGetInfo(handle, (REX_int32_t)sizeof(REXInfo), &info);
+	if (result != kREXError_NoError) {
+		printf("Error getting REX info for cue file\n");
+		return;
+	}
+	
+	/* Open cue file for writing */
+	cueFile = fopen(cueFilePath, "w");
+	if (cueFile == NULL) {
+		printf("Unable to create cue file: %s\n", cueFilePath);
+		return;
+	}
+	
+	/* Get the WAV filename from the cue file path */
+	const char* lastSlash = strrchr(cueFilePath, '/');
+	const char* baseFileName = lastSlash ? lastSlash + 1 : cueFilePath;
+	char wavFileName[512];
+	
+	/* Replace .cue with .wav */
+	const char* dot = strrchr(baseFileName, '.');
+	if (dot) {
+		size_t baseLen = dot - baseFileName;
+		if (baseLen >= sizeof(wavFileName) - 5) {
+			baseLen = sizeof(wavFileName) - 5;
+		}
+		memcpy(wavFileName, baseFileName, baseLen);
+		strcpy(wavFileName + baseLen, ".wav");
+	} else {
+		snprintf(wavFileName, sizeof(wavFileName), "%s.wav", baseFileName);
+	}
+	
+	/* Write CDRWIN cue sheet header */
+	fprintf(cueFile, "REM Generated by rex2wav\n");
+	fprintf(cueFile, "REM Original Tempo: %.2f BPM\n", (float)info.fTempo / 1000.0f);
+	fprintf(cueFile, "REM Time Signature: %d/%d\n", info.fTimeSignNom, info.fTimeSignDenom);
+	fprintf(cueFile, "FILE \"%s\" WAVE\n", wavFileName);
+	
+	/* Write track for each slice */
+	for (REX_int32_t sliceIndex = 0; sliceIndex < info.fSliceCount; sliceIndex++) {
+		result = REXGetSliceInfo(handle, sliceIndex, (REX_int32_t)sizeof(REXSliceInfo), &sliceInfo);
+		if (result != kREXError_NoError) {
+			continue;
+		}
+		
+		/* Calculate time position in MM:SS:FF format (frames = 75 per second) */
+		uint32_t startSample = currentPosition;
+		float startTimeSec = (float)startSample / (float)info.fSampleRate;
+		
+		int minutes = (int)(startTimeSec / 60.0f);
+		int seconds = (int)startTimeSec % 60;
+		int frames = (int)((startTimeSec - (float)(minutes * 60 + seconds)) * 75.0f);
+		
+		fprintf(cueFile, "  TRACK %02d AUDIO\n", sliceIndex + 1);
+		fprintf(cueFile, "    TITLE \"Slice %02d\"\n", sliceIndex + 1);
+		fprintf(cueFile, "    INDEX 01 %02d:%02d:%02d\n", minutes, seconds, frames);
+		
+		currentPosition += sliceInfo.fSampleLength;
+	}
+	
+	fclose(cueFile);
 }
 
 REXError PreviewRenderInTempo(REXHandle handle, REX_int32_t tempo, REX_int32_t frameRate, char* outputDir) {
@@ -699,15 +917,179 @@ done:
 }
 
 int main(int argc, char *argv[]) {
-	if(argc == 1) {
-		return Test(".", kFileName, kOutputSampleRate);
+	int extractSlicesSeparately = 0;
+	int writeCueFiles = 0;
+	char* outputPath = NULL;
+	char* inputFile = NULL;
+	int sampleRate = kOutputSampleRate;
+	char autoOutputPath[1024];
+	int numFiles = 0;
+	int failCount = 0;
+	
+	/* Parse command-line arguments */
+	if(argc < 2) {
+		/* Show usage if not enough arguments */
+		printf("rex2wav - Convert REX2 files to WAV format\n\n");
+		printf("Usage:\n");
+		printf("  rex2wav <input.rx2> [output.wav] [samplerate] [--cue]\n");
+		printf("  rex2wav <input.rx2> --slices-separately [output-dir]\n");
+		printf("  rex2wav *.rx2 [--cue]                    # Batch convert all .rx2 files\n\n");
+		printf("Arguments:\n");
+		printf("  input.rx2              Input REX2 file(s)\n");
+		printf("  output.wav             Output WAV file (optional, auto-generated from input if omitted)\n");
+		printf("  output-dir             Output directory for slices (default: ./slices/)\n");
+		printf("  samplerate             Output sample rate (default: %d)\n", kOutputSampleRate);
+		printf("  --cue                  Also write .cue sheet files\n");
+		printf("  --slices-separately    Export slices as separate files\n\n");
+		printf("Examples:\n");
+		printf("  rex2wav loop.rx2                         # Creates loop.wav (with embedded cues)\n");
+		printf("  rex2wav loop.rx2 --cue                   # Creates loop.wav + loop.cue\n");
+		printf("  rex2wav *.rx2                            # Converts all .rx2 files\n");
+		printf("  rex2wav loop.rx2 --slices-separately     # Export slices to ./slices/\n");
+		return 0;
 	}
-	else if(argc == 4) {
-		return Test(argv[1], argv[2], atoi(argv[3]));
+	
+	/* Check for --cue flag anywhere in arguments */
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--cue") == 0) {
+			writeCueFiles = 1;
+			break;
+		}
 	}
-	else {
-		printf("Usage: TestApp1 OutputDir TestFilePath OutputSampleRate\n");
-		return -1;
+	
+	inputFile = argv[1];
+	
+	/* Check if second argument is --slices-separately flag */
+	if (argc >= 3 && strcmp(argv[2], "--slices-separately") == 0) {
+		extractSlicesSeparately = 1;
+		
+		/* Check if output directory was specified */
+		if (argc >= 4) {
+			outputPath = argv[3];
+		} else {
+			/* Default to ./slices/ */
+			strcpy(autoOutputPath, "slices");
+			outputPath = autoOutputPath;
+		}
+		
+		/* Optional sample rate */
+		if (argc >= 5) {
+			sampleRate = atoi(argv[4]);
+		}
+		
+		/* Create output directory */
+		struct stat st = {0};
+		if (stat(outputPath, &st) == -1) {
+			#if REX_WINDOWS
+			mkdir(outputPath);
+			#else
+			mkdir(outputPath, 0755);
+			#endif
+		}
+		
+		printf("%s → %s/\n", inputFile, outputPath);
+		return Test(outputPath, inputFile, sampleRate, extractSlicesSeparately, writeCueFiles);
 	}
-	return 0;
+	
+	/* Check if we have multiple input files (batch mode) */
+	/* Count how many .rx2/.rex files we have */
+	for (int i = 1; i < argc; i++) {
+		/* Skip flags */
+		if (strcmp(argv[i], "--cue") == 0 || strcmp(argv[i], "--slices-separately") == 0) {
+			continue;
+		}
+		const char* ext = strrchr(argv[i], '.');
+		if (ext && (strcasecmp(ext, ".rx2") == 0 || strcasecmp(ext, ".rex") == 0)) {
+			numFiles++;
+		} else {
+			/* Not a REX file, might be sample rate or output name */
+			break;
+		}
+	}
+	
+	if (numFiles > 1) {
+		/* Batch mode - process all files */
+		printf("Converting %d files:\n", numFiles);
+		
+		for (int i = 0; i < numFiles; i++) {
+			inputFile = argv[i + 1];
+			
+			/* Auto-generate output filename */
+			const char* dot = strrchr(inputFile, '.');
+			if (dot && (strcasecmp(dot, ".rx2") == 0 || strcasecmp(dot, ".rex") == 0)) {
+				size_t baseLen = dot - inputFile;
+				if (baseLen >= sizeof(autoOutputPath) - 5) {
+					baseLen = sizeof(autoOutputPath) - 5;
+				}
+				memcpy(autoOutputPath, inputFile, baseLen);
+				strcpy(autoOutputPath + baseLen, ".wav");
+			} else {
+				snprintf(autoOutputPath, sizeof(autoOutputPath), "%s.wav", inputFile);
+			}
+			outputPath = autoOutputPath;
+			
+			printf("[%d/%d] %s → %s", i + 1, numFiles, inputFile, outputPath);
+			int result = Test(outputPath, inputFile, sampleRate, 0, writeCueFiles);
+			if (result != 0) {
+				failCount++;
+			}
+		}
+		
+		printf("\n✓ Completed: %d/%d files converted successfully\n", numFiles - failCount, numFiles);
+		return (failCount > 0) ? 1 : 0;
+	}
+	
+	/* Single file mode */
+	if (argc == 2 || (argc == 3 && strcmp(argv[2], "--cue") == 0)) {
+		/* Just input file (possibly with --cue flag) - auto-generate output filename */
+		const char* dot = strrchr(inputFile, '.');
+		if (dot && (strcasecmp(dot, ".rx2") == 0 || strcasecmp(dot, ".rex") == 0)) {
+			size_t baseLen = dot - inputFile;
+			if (baseLen >= sizeof(autoOutputPath) - 5) {
+				baseLen = sizeof(autoOutputPath) - 5;
+			}
+			memcpy(autoOutputPath, inputFile, baseLen);
+			strcpy(autoOutputPath + baseLen, ".wav");
+		} else {
+			snprintf(autoOutputPath, sizeof(autoOutputPath), "%s.wav", inputFile);
+		}
+		outputPath = autoOutputPath;
+	}
+	else if (argc >= 3) {
+		/* Check if second arg is a flag, number (samplerate), or output filename */
+		char* endptr;
+		long rate = strtol(argv[2], &endptr, 10);
+		
+		if (*endptr == '\0' && rate > 0) {
+			/* It's input + samplerate */
+			sampleRate = (int)rate;
+			
+			/* Auto-generate output filename */
+			const char* dot = strrchr(inputFile, '.');
+			if (dot && (strcasecmp(dot, ".rx2") == 0 || strcasecmp(dot, ".rex") == 0)) {
+				size_t baseLen = dot - inputFile;
+				if (baseLen >= sizeof(autoOutputPath) - 5) {
+					baseLen = sizeof(autoOutputPath) - 5;
+				}
+				memcpy(autoOutputPath, inputFile, baseLen);
+				strcpy(autoOutputPath + baseLen, ".wav");
+			} else {
+				snprintf(autoOutputPath, sizeof(autoOutputPath), "%s.wav", inputFile);
+			}
+			outputPath = autoOutputPath;
+		} else {
+			/* It's input + output, optionally + samplerate and/or --cue */
+			outputPath = argv[2];
+			if (argc >= 4) {
+				/* Check if argv[3] is --cue or a sample rate */
+				if (strcmp(argv[3], "--cue") != 0) {
+					sampleRate = atoi(argv[3]);
+				}
+			}
+		}
+	}
+	
+	/* Single file conversion - show what we're doing */
+	printf("%s → %s", inputFile, outputPath);
+	return Test(outputPath, inputFile, sampleRate, extractSlicesSeparately, writeCueFiles);
 }

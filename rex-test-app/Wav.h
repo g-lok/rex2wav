@@ -27,6 +27,7 @@ typedef unsigned __int32 uint32_t;
 #define WAVEID									dllFOURCC('W','A','V','E')
 #define WAVE_FORMAT_ID							dllFOURCC('f','m','t',' ')
 #define WAVE_SOUND_DATA_ID						dllFOURCC('d','a','t','a')
+#define WAVE_CUE_ID								dllFOURCC('c','u','e',' ')
 
 enum {
 	WAVE_FORMAT_PCM_ID	=	1
@@ -65,8 +66,15 @@ typedef struct WAVE_PCM_FORMAT_CHUNK {
 } WAVE_PCM_FORMAT_CHUNK;
 
  
+/* Cue point structure */
+typedef struct {
+	uint32_t position;   /* Sample position */
+	char label[256];     /* Optional label */
+} WaveCuePoint;
+
 /* These functions are used in our test application */
 uint32_t WriteWave(FILE* file,uint32_t wordCount, uint32_t numChannels, uint32_t sampleSize, uint32_t sampleRate,float* buffers[2]);
+uint32_t WriteWaveWithCues(FILE* file,uint32_t wordCount, uint32_t numChannels, uint32_t sampleSize, uint32_t sampleRate,float* buffers[2], WaveCuePoint* cuePoints, uint32_t numCues);
 void WriteTxt(FILE* file,uint32_t wordCount, uint32_t numChannels, uint32_t sampleRate, float* buffers[2]);
 
 

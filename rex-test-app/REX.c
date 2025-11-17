@@ -272,8 +272,8 @@ namespace REX {
     return result;
   }
 
-  static REXPROC FindREXDLLFunction(const char functionName[]) {
-    REXPROC result = (REXPROC)GetProcAddress(gREXDLLInstance, functionName);
+  static void* FindREXDLLFunction(const char functionName[]) {
+    void* result = (void*)GetProcAddress(gREXDLLInstance, functionName);
     return result;
   }
 
@@ -410,9 +410,9 @@ namespace REX {
     return result;
   }
 
-  static REXPROC FindREXDLLFunction(const char functionName[]) {
+  static void* FindREXDLLFunction(const char functionName[]) {
     CFStringRef functionNameStringRef;
-    REXPROC result;
+    void* result;
 
     REX_ASSERT(functionName != NULL);
 
@@ -423,9 +423,8 @@ namespace REX {
         REX_ASSERT(FALSE);
         return NULL;
       }
-      REX_ASSERT(sizeof(unsigned long) >= sizeof(void *));
-      result = (REXPROC)((unsigned long)CFBundleGetFunctionPointerForName(
-          gREXMachODLLInstance, functionNameStringRef));
+      result = CFBundleGetFunctionPointerForName(
+          gREXMachODLLInstance, functionNameStringRef);
       CFRelease(functionNameStringRef);
       functionNameStringRef = NULL;
       REX_ASSERT(result != NULL);
@@ -464,9 +463,9 @@ namespace REX {
 
 #endif /* REX_MAC */
 
-  static REXPROC FindREXDLLFunction_Fallback(const char functionName1[],
+  static void* FindREXDLLFunction_Fallback(const char functionName1[],
                                              const char functionName2[]) {
-    REXPROC result = FindREXDLLFunction(functionName1);
+    void* result = FindREXDLLFunction(functionName1);
     if (result == NULL) {
       result = FindREXDLLFunction(functionName2);
     }

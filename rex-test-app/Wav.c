@@ -10,6 +10,7 @@ void PackRIFF(RIFF_FORM_CHUNK* riff,uint8_t binary[]);
 
 uint32_t WritePCMFormatChunk(FILE* file,uint32_t channels, uint32_t sampleSize, uint32_t rate);
 uint32_t WriteSoundDataChunk(FILE* file,uint32_t wordCount, uint32_t numChannels, uint32_t sampleSize,float* buffers[2]);
+uint32_t WriteCueChunk(FILE* file, WaveCuePoint* cuePoints, uint32_t numCues);
 
 void Pack32BitUnsignedLittle(uint8_t binary[], uint32_t v);
 void Pack16BitUnsignedLittle(uint8_t binary[], uint16_t v);
@@ -76,6 +77,95 @@ uint32_t WriteWave(FILE* file,uint32_t wordCount, uint32_t numChannels, uint32_t
 	fwrite(riffFormatImage,RIFF_IMAGE_SIZE,1,file);
 
 	return(0);
+}
+
+/*
+	WriteWaveWithCues,
+	WriteWaveWithCues takes buffers to sample data, an open FILE stream, some parameters,
+	and an array of cue points. It writes a wav-format file with cue markers.
+*/
+uint32_t WriteWaveWithCues(FILE* file,uint32_t wordCount, uint32_t numChannels, uint32_t sampleSize,uint32_t sampleRate,float* buffers[2], WaveCuePoint* cuePoints, uint32_t numCues) {
+
+	uint32_t totalSize=0;
+
+	uint8_t riffFormatImage[RIFF_IMAGE_SIZE];
+	RIFF_FORM_CHUNK riff;
+	long riffPos=ftell(file);
+
+	/* RIFF chunk*/
+	riff.ckID=WAVE_RIFF_ID;
+	riff.ckSize=0;
+	PackRIFF(&riff,riffFormatImage);
+	fwrite(riffFormatImage,RIFF_IMAGE_SIZE,1,file);
+	{
+		/* Wave head */
+		uint8_t waveID[4]; 
+		Pack32BitUnsignedLittle(waveID,WAVEID);
+		fwrite(waveID,4,1,file);
+		totalSize+=4;
+		/* fmt chunk */
+		{
+			totalSize+=WritePCMFormatChunk(file,numChannels,sampleSize,sampleRate);
+		}
+		/* data chunk */
+		{
+			totalSize+=WriteSoundDataChunk(file,wordCount,numChannels,sampleSize,buffers);
+		}
+		/* cue chunk */
+		if (numCues > 0) {
+			totalSize+=WriteCueChunk(file,cuePoints,numCues);
+		}
+	}
+
+	fseek(file,riffPos,SEEK_SET);
+	riff.ckSize=totalSize;
+	PackRIFF(&riff,riffFormatImage);
+	fwrite(riffFormatImage,RIFF_IMAGE_SIZE,1,file);
+
+	return(0);
+}
+
+/*
+	WriteCueChunk,
+	Writes cue point chunk to file.
+*/
+uint32_t WriteCueChunk(FILE* file, WaveCuePoint* cuePoints, uint32_t numCues) {
+	uint8_t chunkHeader[8];
+	long startPos = ftell(file);
+	uint32_t chunkSize = 4 + (numCues * 24); /* 4 bytes for count + 24 bytes per cue point */
+	
+	/* Write cue chunk header */
+	Pack32BitUnsignedLittle(&chunkHeader[0], WAVE_CUE_ID);
+	Pack32BitUnsignedLittle(&chunkHeader[4], chunkSize);
+	fwrite(chunkHeader, 8, 1, file);
+	
+	/* Write number of cue points */
+	uint8_t numCuesData[4];
+	Pack32BitUnsignedLittle(numCuesData, numCues);
+	fwrite(numCuesData, 4, 1, file);
+	
+	/* Write each cue point */
+	for (uint32_t i = 0; i < numCues; i++) {
+		uint8_t cuePointData[24];
+		
+		/* Cue point ID */
+		Pack32BitUnsignedLittle(&cuePointData[0], i + 1);
+		/* Position (play order position) */
+		Pack32BitUnsignedLittle(&cuePointData[4], i);
+		/* Data chunk ID ('data') */
+		Pack32BitUnsignedLittle(&cuePointData[8], WAVE_SOUND_DATA_ID);
+		/* Chunk start (byte offset of data chunk, 0 for uncompressed WAV) */
+		Pack32BitUnsignedLittle(&cuePointData[12], 0);
+		/* Block start (byte offset to sample of First Channel, 0 for uncompressed WAV) */
+		Pack32BitUnsignedLittle(&cuePointData[16], 0);
+		/* Sample offset (sample frame offset) */
+		Pack32BitUnsignedLittle(&cuePointData[20], cuePoints[i].position);
+		
+		fwrite(cuePointData, 24, 1, file);
+	}
+	
+	long endPos = ftell(file);
+	return (uint32_t)(endPos - startPos);
 }
 
 /*
