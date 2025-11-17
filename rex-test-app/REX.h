@@ -74,7 +74,7 @@
 */
 #define REX_ABI
 #ifndef REX_DLL_LOADER
-#define REX_DLL_LOADER REX_WINDOWS
+#define REX_DLL_LOADER 1
 #endif
 
 #if (REX_DLL_LOADER) && (REX_WINDOWS)
