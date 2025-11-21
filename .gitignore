@@ -5,6 +5,9 @@
 *.rx2
 *.wav
 
+# Ignore the binary
+rex2wav
+
 # Ignore sdk directory
 sdk/
 

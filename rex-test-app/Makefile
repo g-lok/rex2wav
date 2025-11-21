@@ -40,7 +40,7 @@ LDFLAGS  = $(ARCHFLAGS) \
             -framework "REX Shared Library" \
             -framework CoreFoundation \
             -Wl,-rpath,@executable_path
-SRCS = REXTest.c REX.c Wav.c 
+SRCS = rex2wav.c REX.c Wav.c argparse.c 
 # SRCDIR   := src
 OBJS = $(SRCS:.c=.o)
 # OBJDIR   := obj
