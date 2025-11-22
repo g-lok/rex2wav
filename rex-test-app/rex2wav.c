@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <memory.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,16 @@
 #include "REX.h"
 #include "Wav.h"
 #include "argparse.h"
+
+static const char *const usages[] = {
+    "basic [options] [[--] args]",
+    "basic [options]",
+    NULL,
+};
+
+#define PERM_READ (1 << 0)
+#define PERM_WRITE (1 << 1)
+#define PERM_EXEC (1 << 2)
 
 #if REX_DLL_LOADER
 #if REX_WINDOWS
@@ -977,194 +988,52 @@ done:
 }
 
 int main(int argc, char *argv[]) {
-  int extractSlicesSeparately = 0;
-  int writeCueFiles = 0;
-  char *outputPath = NULL;
-  char *inputFile = NULL;
-  int sampleRate = kOutputSampleRate;
-  char autoOutputPath[1024];
-  int numFiles = 0;
-  int failCount = 0;
-  int maximumSlicesPerWav = 128;
+  // Init args
+  char *list = NULL;
+  char *input_folder = NULL;
+  char *input_file = argv[1];
+  bool recursive = false;
+  int slice_limit = 0;
+  int bit_rate = 24;
+  int sample_rate = 44100;
+  char *output_file = NULL;
+  char *output_folder = NULL;
 
-  /* Parse command-line arguments */
-  if (argc < 2) {
-    /* Show usage if not enough arguments */
-    printf("rex2wav - Convert REX2 files to WAV format\n\n");
-    printf("Usage:\n");
-    printf("  rex2wav <input.rx2> [output.wav] [samplerate] [--cue]\n");
-    printf("  rex2wav <input.rx2> --slices-separately [output-dir]\n");
-    printf("  rex2wav *.rx2 [--cue]                    # Batch convert all "
-           ".rx2 files\n\n");
-    printf("Arguments:\n");
-    printf("  input.rx2              Input REX2 file(s)\n");
-    printf("  output.wav             Output WAV file (optional, auto-generated "
-           "from input if omitted)\n");
-    printf("  output-dir             Output directory for slices (default: "
-           "./slices/)\n");
-    printf("  samplerate             Output sample rate (default: %d)\n",
-           kOutputSampleRate);
-    printf("  --cue                  Also write .cue sheet files\n");
-    printf("  --slices-separately    Export slices as separate files\n\n");
-    printf("Examples:\n");
-    printf("  rex2wav loop.rx2                         # Creates loop.wav "
-           "(with embedded cues)\n");
-    printf("  rex2wav loop.rx2 --cue                   # Creates loop.wav + "
-           "loop.cue\n");
-    printf("  rex2wav *.rx2                            # Converts all .rx2 "
-           "files\n");
-    printf("  rex2wav loop.rx2 --slices-separately     # Export slices to "
-           "./slices/\n");
-    return 0;
-  }
+  struct argparse_option options[] = {
+      OPT_HELP(),
+      OPT_GROUP("Input Source."),
+      OPT_STRING('l', "list", &list, "Plaintext list of files to process.",
+                 NULL, 0, 0),
+      OPT_STRING('d', "input_folder", &input_folder,
+                 "Input folder of files to process", NULL, 0, 0),
+      OPT_BOOLEAN(
+          'r', "recursive", &recursive,
+          "If input folder is set, recursively search for Recycle files.", NULL,
+          0, 0),
+      OPT_STRING('f', "input_file", &input_file, "Input file.", NULL, 0, 0),
+      OPT_GROUP("Output options."),
+      OPT_STRING('o', "output_file", &output_file, "Output File.", NULL, 0, 0),
+      OPT_STRING('d', "output_folder", &output_folder,
+                 "Output directory for converted files.", NULL, 0, 0),
+      OPT_INTEGER('s', "Output Sample Rate", &sample_rate,
+                  "Output sample rate. From 11.025kHz to 1mHz.", NULL, 0, 0),
+      OPT_INTEGER(
+          'b', "bit_rate", &bit_rate,
+          "Sets output sample bitrate. Only values of 8, 16, and 24 accepted.",
+          NULL, 0, 0),
+      OPT_INTEGER(
+          'm', "max_slice_limit", &slice_limit,
+          "Maximum number of slices per output file.  Will cut in half at "
+          "nearest slice marker until all sections are under the limit.",
+          NULL, 0, 0),
+      OPT_END(),
+  };
 
-  /* Check for --cue flag anywhere in arguments */
-  for (int i = 1; i < argc; i++) {
-    if (strcmp(argv[i], "--cue") == 0) {
-      writeCueFiles = 1;
-      break;
-    }
-  }
-
-  inputFile = argv[1];
-
-  /* Check if second argument is --slices-separately flag */
-  if (argc >= 3 && strcmp(argv[2], "--slices-separately") == 0) {
-    extractSlicesSeparately = 1;
-
-    /* Check if output directory was specified */
-    if (argc >= 4) {
-      outputPath = argv[3];
-    } else {
-      /* Default to ./slices/ */
-      strcpy(autoOutputPath, "slices");
-      outputPath = autoOutputPath;
-    }
-
-    /* Optional sample rate */
-    if (argc >= 5) {
-      sampleRate = atoi(argv[4]);
-    }
-
-    /* Create output directory */
-    struct stat st = {0};
-    if (stat(outputPath, &st) == -1) {
-#if REX_WINDOWS
-      mkdir(outputPath);
-#else
-      mkdir(outputPath, 0755);
-#endif
-    }
-
-    printf("%s → %s/\n", inputFile, outputPath);
-    return Test(outputPath, inputFile, sampleRate, extractSlicesSeparately,
-                writeCueFiles);
-  }
-
-  /* Check if we have multiple input files (batch mode) */
-  /* Count how many .rx2/.rex files we have */
-  for (int i = 1; i < argc; i++) {
-    /* Skip flags */
-    if (strcmp(argv[i], "--cue") == 0 ||
-        strcmp(argv[i], "--slices-separately") == 0) {
-      continue;
-    }
-    const char *ext = strrchr(argv[i], '.');
-    if (ext && (strcasecmp(ext, ".rx2") == 0 || strcasecmp(ext, ".rex") == 0)) {
-      numFiles++;
-    } else {
-      /* Not a REX file, might be sample rate or output name */
-      break;
-    }
-  }
-
-  if (numFiles > 1) {
-    /* Batch mode - process all files */
-    printf("Converting %d files:\n", numFiles);
-
-    for (int i = 0; i < numFiles; i++) {
-      inputFile = argv[i + 1];
-
-      /* Auto-generate output filename */
-      const char *dot = strrchr(inputFile, '.');
-      if (dot &&
-          (strcasecmp(dot, ".rx2") == 0 || strcasecmp(dot, ".rex") == 0)) {
-        size_t baseLen = dot - inputFile;
-        if (baseLen >= sizeof(autoOutputPath) - 5) {
-          baseLen = sizeof(autoOutputPath) - 5;
-        }
-        memcpy(autoOutputPath, inputFile, baseLen);
-        strcpy(autoOutputPath + baseLen, ".wav");
-      } else {
-        snprintf(autoOutputPath, sizeof(autoOutputPath), "%s.wav", inputFile);
-      }
-      outputPath = autoOutputPath;
-
-      printf("[%d/%d] %s → %s", i + 1, numFiles, inputFile, outputPath);
-      int result = Test(outputPath, inputFile, sampleRate, 0, writeCueFiles);
-      if (result != 0) {
-        failCount++;
-      }
-    }
-
-    printf("\n✓ Completed: %d/%d files converted successfully\n",
-           numFiles - failCount, numFiles);
-    return (failCount > 0) ? 1 : 0;
-  }
-
-  /* Single file mode */
-  if (argc == 2 || (argc == 3 && strcmp(argv[2], "--cue") == 0)) {
-    /* Just input file (possibly with --cue flag) - auto-generate output
-     * filename */
-    const char *dot = strrchr(inputFile, '.');
-    if (dot && (strcasecmp(dot, ".rx2") == 0 || strcasecmp(dot, ".rex") == 0)) {
-      size_t baseLen = dot - inputFile;
-      if (baseLen >= sizeof(autoOutputPath) - 5) {
-        baseLen = sizeof(autoOutputPath) - 5;
-      }
-      memcpy(autoOutputPath, inputFile, baseLen);
-      strcpy(autoOutputPath + baseLen, ".wav");
-    } else {
-      snprintf(autoOutputPath, sizeof(autoOutputPath), "%s.wav", inputFile);
-    }
-    outputPath = autoOutputPath;
-  } else if (argc >= 3) {
-    /* Check if second arg is a flag, number (samplerate), or output filename */
-    char *endptr;
-    long rate = strtol(argv[2], &endptr, 10);
-
-    if (*endptr == '\0' && rate > 0) {
-      /* It's input + samplerate */
-      sampleRate = (int)rate;
-
-      /* Auto-generate output filename */
-      const char *dot = strrchr(inputFile, '.');
-      if (dot &&
-          (strcasecmp(dot, ".rx2") == 0 || strcasecmp(dot, ".rex") == 0)) {
-        size_t baseLen = dot - inputFile;
-        if (baseLen >= sizeof(autoOutputPath) - 5) {
-          baseLen = sizeof(autoOutputPath) - 5;
-        }
-        memcpy(autoOutputPath, inputFile, baseLen);
-        strcpy(autoOutputPath + baseLen, ".wav");
-      } else {
-        snprintf(autoOutputPath, sizeof(autoOutputPath), "%s.wav", inputFile);
-      }
-      outputPath = autoOutputPath;
-    } else {
-      /* It's input + output, optionally + samplerate and/or --cue */
-      outputPath = argv[2];
-      if (argc >= 4) {
-        /* Check if argv[3] is --cue or a sample rate */
-        if (strcmp(argv[3], "--cue") != 0) {
-          sampleRate = atoi(argv[3]);
-        }
-      }
-    }
-  }
-
-  /* Single file conversion - show what we're doing */
-  printf("%s → %s", inputFile, outputPath);
-  return Test(outputPath, inputFile, sampleRate, extractSlicesSeparately,
-              writeCueFiles);
+  struct argparse argparse;
+  argparse_init(&argparse, options, usages, 0);
+  argparse_describe(
+      &argparse, "\n Convert REX2 files into WAV with cue markers for slices.",
+      "\n More hardware formats coming soon...");
+  argc = argparse_parse(&argparse, argc, argv);
+  printf("%s\n", input_file);
 }
