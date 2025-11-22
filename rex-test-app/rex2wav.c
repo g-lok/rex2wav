@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 #include "REX.h"
 #include "Wav.h"
@@ -1040,5 +1041,16 @@ int main(int argc, char *argv[]) {
   if (!list && !input_folder && !input_file) {
     printf("\nAt least one input source must be declared via --list, "
            "--input_folder, or --input_file.\n");
+    exit(1);
+  }
+  if ((list || input_folder) && (!output_folder)) {
+    printf(
+        "\nAn --output_folder must be used with --list or --input_folder.\n");
+    exit(1);
+  }
+  if ((list || input_folder) && input_file) {
+    printf("\nCannot use --input_file along with either --list or "
+           "--input_folder\n");
+    exit(1);
   }
 }
