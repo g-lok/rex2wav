@@ -991,7 +991,7 @@ int main(int argc, char *argv[]) {
   // Init args
   char *list = NULL;
   char *input_folder = NULL;
-  char *input_file = argv[1];
+  char *input_file = NULL;
   bool recursive = false;
   int slice_limit = 0;
   int bit_rate = 24;
@@ -1010,10 +1010,10 @@ int main(int argc, char *argv[]) {
           'r', "recursive", &recursive,
           "If input folder is set, recursively search for Recycle files.", NULL,
           0, 0),
-      OPT_STRING('f', "input_file", &input_file, "Input file.", NULL, 0, 0),
+      OPT_STRING('i', "input_file", &input_file, "Input file.", NULL, 0, 0),
       OPT_GROUP("Output options."),
       OPT_STRING('o', "output_file", &output_file, "Output File.", NULL, 0, 0),
-      OPT_STRING('d', "output_folder", &output_folder,
+      OPT_STRING('f', "output_folder", &output_folder,
                  "Output directory for converted files.", NULL, 0, 0),
       OPT_INTEGER('s', "Output Sample Rate", &sample_rate,
                   "Output sample rate. From 11.025kHz to 1mHz.", NULL, 0, 0),
@@ -1035,5 +1035,10 @@ int main(int argc, char *argv[]) {
       &argparse, "\n Convert REX2 files into WAV with cue markers for slices.",
       "\n More hardware formats coming soon...");
   argc = argparse_parse(&argparse, argc, argv);
-  printf("%s\n", input_file);
+
+  // Argument sanity checks
+  if (!list && !input_folder && !input_file) {
+    printf("\nAt least one input source must be declared via --list, "
+           "--input_folder, or --input_file.\n");
+  }
 }
