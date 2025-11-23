@@ -1025,7 +1025,9 @@ int main(int argc, char *argv[]) {
       OPT_INTEGER(
           'm', "max_slice_limit", &slice_limit,
           "Maximum number of slices per output file.  Will cut in half at "
-          "nearest slice marker until all sections are under the limit.",
+          "nearest slice marker until all sections are under the limit.\n"
+          "Set to 0 to render single file complete with all slice points.\n"
+          "Set to 1 to split all slices into individual files.",
           NULL, 0, 0),
       OPT_END(),
   };
@@ -1051,6 +1053,23 @@ int main(int argc, char *argv[]) {
   if ((list || input_folder) && input_file) {
     printf("\nCannot use --input_file along with either --list or "
            "--input_folder\n");
+    exit(1);
+  }
+  if ((list || input_folder) && output_file) {
+    printf("\nCannot specify output file if using --list or --input_folder as "
+           "input sources.\n");
+    exit(1);
+  }
+  if (slice_limit < 0) {
+    printf("\n--max_slices must be integer 0 or greater.");
+    exit(1);
+  }
+  if (bit_rate != 8 || bit_rate != 16 || bit_rate != 24) {
+    printf("\n--bit_rate must be either 8, 16, or 24.");
+    exit(1);
+  }
+  if (recursive && input_file) {
+    printf("\n--recursive cannot be used when using an --input_file.\n");
     exit(1);
   }
 }
